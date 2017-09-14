@@ -57,7 +57,7 @@
 #include <socksclient/BSocksClient.h>
 #include <tuntap/BTap.h>
 #include <lwip/init.h>
-#include <lwip/tcp_impl.h>
+#include <lwip/priv/tcp_priv.h>
 #include <lwip/netif.h>
 #include <lwip/tcp.h>
 #include <tun2socks/SocksUdpGwClient.h>
@@ -306,15 +306,15 @@ static void print_version (void);
 static int parse_arguments (int argc, char *argv[]);
 static int process_arguments (void);
 static void signal_handler (void *unused);
-static BAddr baddr_from_lwip (int is_ipv6, const ipX_addr_t *ipx_addr, uint16_t port_hostorder);
+static BAddr baddr_from_lwip (const ip_addr_t *ip_addr, uint16_t port_hostorder);
 static void lwip_init_job_hadler (void *unused);
 static void tcp_timer_handler (void *unused);
 static void device_error_handler (void *unused);
 static void device_read_handler_send (void *unused, uint8_t *data, int data_len);
 static int process_device_udp_packet (uint8_t *data, int data_len);
 static err_t netif_init_func (struct netif *netif);
-static err_t netif_output_func (struct netif *netif, struct pbuf *p, ip_addr_t *ipaddr);
-static err_t netif_output_ip6_func (struct netif *netif, struct pbuf *p, ip6_addr_t *ipaddr);
+static err_t netif_output_func (struct netif *netif, struct pbuf *p, const ip4_addr_t *ipaddr);
+static err_t netif_output_ip6_func (struct netif *netif, struct pbuf *p, const ip6_addr_t *ipaddr);
 static err_t common_netif_output (struct netif *netif, struct pbuf *p);
 static err_t netif_input_func (struct pbuf *p, struct netif *inp);
 static void client_logfunc (struct tcp_client *client);
@@ -524,7 +524,7 @@ int main (int argc, char **argv)
     for (;;) {
         int sock2;
         struct sockaddr_un remote;
-        int t = sizeof(remote);
+        socklen_t t = (socklen_t)sizeof(remote);
         if ((sock2 = accept(sock, (struct sockaddr *)&remote, &t)) == -1) {
             BLog(BLOG_ERROR, "accept() failed: %s (sock = %d)\n", strerror(errno), sock);
             continue;
@@ -1172,13 +1172,13 @@ void signal_handler (void *unused)
     terminate();
 }
 
-BAddr baddr_from_lwip (int is_ipv6, const ipX_addr_t *ipx_addr, uint16_t port_hostorder)
+BAddr baddr_from_lwip (const ip_addr_t *ip_addr, uint16_t port_hostorder)
 {
     BAddr addr;
-    if (is_ipv6) {
-        BAddr_InitIPv6(&addr, (uint8_t *)ipx_addr->ip6.addr, hton16(port_hostorder));
+    if (IP_IS_V6(ip_addr)) {
+        BAddr_InitIPv6(&addr, (uint8_t *)ip_addr->u_addr.ip6.addr, hton16(port_hostorder));
     } else {
-        BAddr_InitIPv4(&addr, ipx_addr->ip4.addr, hton16(port_hostorder));
+        BAddr_InitIPv4(&addr, ip_addr->u_addr.ip4.addr, hton16(port_hostorder));
     }
     return addr;
 }
@@ -1201,12 +1201,12 @@ void lwip_init_job_hadler (void *unused)
     lwip_init();
 
     // make addresses for netif
-    ip_addr_t addr;
+    ip4_addr_t addr;
     addr.addr = netif_ipaddr.ipv4;
-    ip_addr_t netmask;
+    ip4_addr_t netmask;
     netmask.addr = netif_netmask.ipv4;
-    ip_addr_t gw;
-    ip_addr_set_any(&gw);
+    ip4_addr_t gw;
+    ip4_addr_set_any(&gw);
 
     // init netif
     if (!netif_add(&the_netif, &addr, &netmask, &gw, NULL, netif_init_func, netif_input_func)) {
@@ -1218,20 +1218,29 @@ void lwip_init_job_hadler (void *unused)
     // set netif up
     netif_set_up(&the_netif);
 
+    // set netif link up, otherwise ip route will fuck us
+    netif_set_link_up(&the_netif);
+
     // set netif pretend TCP
     netif_set_pretend_tcp(&the_netif, 1);
 
     // set netif default
+    // redirect all traffic to this default route
+    // ip4_route will use default_netif if all things go right
+    // otherwise we have to use LWIP_HOOK_IP4_ROUTE()
     netif_set_default(&the_netif);
 
     if (options.netif_ip6addr) {
         // add IPv6 address
-        memcpy(netif_ip6_addr(&the_netif, 0), netif_ip6addr.bytes, sizeof(netif_ip6addr.bytes));
+        const ip6_addr_t* ip6addr = netif_ip6_addr(&the_netif, 0);
+        memcpy((uint8_t *)(ip6addr->addr), netif_ip6addr.bytes, sizeof(netif_ip6addr.bytes) /* 16 */);
         netif_ip6_addr_set_state(&the_netif, 0, IP6_ADDR_VALID);
     }
 
     // init listener
-    struct tcp_pcb *l = tcp_new();
+    // do NOT use tcp_new() since it doesn't contain ip type
+    // we cannot set addr to any in tcp_bind_to_netif()
+    struct tcp_pcb *l = tcp_new_ip_type(IPADDR_TYPE_V4);
     if (!l) {
         BLog(BLOG_ERROR, "tcp_new failed");
         goto fail;
@@ -1244,6 +1253,18 @@ void lwip_init_job_hadler (void *unused)
         goto fail;
     }
 
+    // at this moment, this netif is already been added to the internal list
+    // There must be something wrong if we cannot find it
+    struct netif *netif = netif_find("ho0");
+    if (netif == NULL) {
+        BLog(BLOG_ERROR, "netif_find failed");
+        goto fail;
+    }
+
+    // use this to set netif index in the pcb
+    // I thought this do the same as tcp_bind_to_netif()
+    tcp_bind_netif(l, netif);
+
     // listen listener
     if (!(listener = tcp_listen(l))) {
         BLog(BLOG_ERROR, "tcp_listen failed");
@@ -1255,9 +1276,9 @@ void lwip_init_job_hadler (void *unused)
     tcp_accept(listener, listener_accept_func);
 
     if (options.netif_ip6addr) {
-        struct tcp_pcb *l_ip6 = tcp_new_ip6();
+        struct tcp_pcb *l_ip6 = tcp_new_ip_type(IPADDR_TYPE_V6);
         if (!l_ip6) {
-            BLog(BLOG_ERROR, "tcp_new_ip6 failed");
+            BLog(BLOG_ERROR, "tcp_new_ip_type failed");
             goto fail;
         }
 
@@ -1266,6 +1287,8 @@ void lwip_init_job_hadler (void *unused)
             tcp_close(l_ip6);
             goto fail;
         }
+
+        tcp_bind_netif(l_ip6, netif);
 
         if (!(listener_ip6 = tcp_listen(l_ip6))) {
             BLog(BLOG_ERROR, "tcp_listen failed");
@@ -1473,12 +1496,12 @@ err_t netif_init_func (struct netif *netif)
     return ERR_OK;
 }
 
-err_t netif_output_func (struct netif *netif, struct pbuf *p, ip_addr_t *ipaddr)
+err_t netif_output_func (struct netif *netif, struct pbuf *p, const ip4_addr_t *ipaddr)
 {
     return common_netif_output(netif, p);
 }
 
-err_t netif_output_ip6_func (struct netif *netif, struct pbuf *p, ip6_addr_t *ipaddr)
+err_t netif_output_ip6_func (struct netif *netif, struct pbuf *p, const ip6_addr_t *ipaddr)
 {
     return common_netif_output(netif, p);
 }
@@ -1567,9 +1590,9 @@ err_t listener_accept_func (void *arg, struct tcp_pcb *newpcb, err_t err)
 {
     ASSERT(err == ERR_OK)
 
-    // signal accepted
-    struct tcp_pcb *this_listener = (PCB_ISIPV6(newpcb) ? listener_ip6 : listener);
-    tcp_accepted(this_listener);
+    // signal accepted - not needed anymore
+    //struct tcp_pcb *this_listener = (PCB_ISIPV6(newpcb) ? listener_ip6 : listener);
+    //tcp_accepted(this_listener);
 
     // allocate client structure
     struct tcp_client *client = (struct tcp_client *)malloc(sizeof(*client));
@@ -1583,8 +1606,8 @@ err_t listener_accept_func (void *arg, struct tcp_pcb *newpcb, err_t err)
     SYNC_FROMHERE
 
     // read addresses
-    client->local_addr = baddr_from_lwip(PCB_ISIPV6(newpcb), &newpcb->local_ip, newpcb->local_port);
-    client->remote_addr = baddr_from_lwip(PCB_ISIPV6(newpcb), &newpcb->remote_ip, newpcb->remote_port);
+    client->local_addr = baddr_from_lwip(&newpcb->local_ip, newpcb->local_port);
+    client->remote_addr = baddr_from_lwip(&newpcb->remote_ip, newpcb->remote_port);
 
     // get destination address
     BAddr addr = client->local_addr;

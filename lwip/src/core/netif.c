@@ -657,6 +657,15 @@ netif_set_gw(struct netif *netif, const ip4_addr_t *gw)
   }
 }
 
+void netif_set_pretend_tcp (struct netif *netif, u8_t pretend)
+{
+    if (pretend) {
+        netif->flags |= NETIF_FLAG_PRETEND_TCP;
+    } else {
+        netif->flags &= ~NETIF_FLAG_PRETEND_TCP;
+    }
+}
+
 /**
  * @ingroup netif_ip4
  * Change the netmask of a network interface
@@ -696,6 +705,13 @@ netif_set_netmask(struct netif *netif, const ip4_addr_t *netmask)
   }
 }
 #endif /* LWIP_IPV4 */
+
+int netif_is_named (struct netif *netif, const char name[3])
+{
+    u8_t num = name[2] - '0';
+
+    return (!memcmp(netif->name, name, 2) && netif->num == num);
+}
 
 /**
  * @ingroup netif

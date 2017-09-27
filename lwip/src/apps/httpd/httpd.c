@@ -104,6 +104,9 @@
 #ifdef LWIP_HOOK_FILENAME
 #include LWIP_HOOK_FILENAME
 #endif
+#if LWIP_HTTPD_TIMING
+#include "lwip/sys.h"
+#endif /* LWIP_HTTPD_TIMING */
 
 #include <string.h> /* memset */
 #include <stdlib.h> /* atoi */
@@ -138,6 +141,7 @@
 #endif
 
 /* Return values for http_send_*() */
+#define HTTP_DATA_TO_SEND_FREED    3
 #define HTTP_DATA_TO_SEND_BREAK    2
 #define HTTP_DATA_TO_SEND_CONTINUE 1
 #define HTTP_NO_DATA_TO_SEND       0
@@ -147,7 +151,7 @@ typedef struct {
   u8_t shtml;
 } default_filename;
 
-const default_filename g_psDefaultFilenames[] = {
+static const default_filename httpd_default_filenames[] = {
   {"/index.shtml", 1 },
   {"/index.ssi",   1 },
   {"/index.shtm",  1 },
@@ -155,8 +159,7 @@ const default_filename g_psDefaultFilenames[] = {
   {"/index.htm",   0 }
 };
 
-#define NUM_DEFAULT_FILENAMES (sizeof(g_psDefaultFilenames) /   \
-                               sizeof(default_filename))
+#define NUM_DEFAULT_FILENAMES LWIP_ARRAYSIZE(httpd_default_filenames)
 
 #if LWIP_HTTPD_SUPPORT_REQUESTLIST
 /** HTTP request is copied here from pbufs for simple parsing */
@@ -182,11 +185,11 @@ static char http_uri_buf[LWIP_HTTPD_URI_BUF_LEN + 1];
  * requested file.
  */
 #define NUM_FILE_HDR_STRINGS 5
-#define HDR_STRINGS_IDX_HTTP_STATUS          0 /* e.g. "HTTP/1.0 200 OK\r\n" */
-#define HDR_STRINGS_IDX_SERVER_NAME          1 /* e.g. "Server: "HTTPD_SERVER_AGENT"\r\n" */
-#define HDR_STRINGS_IDX_CONTENT_LEN_KEPALIVE 2 /* e.g. "Content-Length: xy\r\n" and/or "Connection: keep-alive\r\n" */
-#define HDR_STRINGS_IDX_CONTENT_LEN_NR       3 /* the byte count, when content-length is used */
-#define HDR_STRINGS_IDX_CONTENT_TYPE         4 /* the content type (or default answer content type including default document) */
+#define HDR_STRINGS_IDX_HTTP_STATUS           0 /* e.g. "HTTP/1.0 200 OK\r\n" */
+#define HDR_STRINGS_IDX_SERVER_NAME           1 /* e.g. "Server: "HTTPD_SERVER_AGENT"\r\n" */
+#define HDR_STRINGS_IDX_CONTENT_LEN_KEEPALIVE 2 /* e.g. "Content-Length: xy\r\n" and/or "Connection: keep-alive\r\n" */
+#define HDR_STRINGS_IDX_CONTENT_LEN_NR        3 /* the byte count, when content-length is used */
+#define HDR_STRINGS_IDX_CONTENT_TYPE          4 /* the content type (or default answer content type including default document) */
 
 /* The dynamically generated Content-Length buffer needs space for CRLF + NULL */
 #define LWIP_HTTPD_MAX_CONTENT_LEN_OFFSET 3
@@ -307,29 +310,29 @@ static void http_continue(void *connection);
 
 #if LWIP_HTTPD_SSI
 /* SSI insert handler function pointer. */
-tSSIHandler g_pfnSSIHandler;
+static tSSIHandler httpd_ssi_handler;
 #if !LWIP_HTTPD_SSI_RAW
-int g_iNumTags;
-const char **g_ppcTags;
+static int httpd_num_tags;
+static const char **httpd_tags;
 #endif /* !LWIP_HTTPD_SSI_RAW */
 
 #define LEN_TAG_LEAD_IN 5
-const char *const g_pcTagLeadIn = "<!--#";
+static const char httpd_tag_lead_in[] = "<!--#";
 
 #define LEN_TAG_LEAD_OUT 3
-const char *const g_pcTagLeadOut = "-->";
+static const char httpd_tag_lead_out[] = "-->";
 #endif /* LWIP_HTTPD_SSI */
 
 #if LWIP_HTTPD_CGI
 /* CGI handler information */
-const tCGI *g_pCGIs;
-int g_iNumCGIs;
-int http_cgi_paramcount;
+static const tCGI *httpd_cgis;
+static int httpd_num_cgis;
+static int http_cgi_paramcount;
 #define http_cgi_params     hs->params
 #define http_cgi_param_vals hs->param_vals
 #elif LWIP_HTTPD_CGI_SSI
-char *http_cgi_params[LWIP_HTTPD_MAX_CGI_PARAMETERS]; /* Params extracted from the request URI */
-char *http_cgi_param_vals[LWIP_HTTPD_MAX_CGI_PARAMETERS]; /* Values for each extracted param */
+static char *http_cgi_params[LWIP_HTTPD_MAX_CGI_PARAMETERS]; /* Params extracted from the request URI */
+static char *http_cgi_param_vals[LWIP_HTTPD_MAX_CGI_PARAMETERS]; /* Values for each extracted param */
 #endif /* LWIP_HTTPD_CGI */
 
 #if LWIP_HTTPD_KILL_OLD_ON_CONNECTIONS_EXCEEDED
@@ -767,9 +770,9 @@ get_tag_insert(struct http_state *hs)
   tag = ssi->tag_name;
 #endif
 
-  if (g_pfnSSIHandler
+  if (httpd_ssi_handler
 #if !LWIP_HTTPD_SSI_RAW
-      && g_ppcTags && g_iNumTags
+      && httpd_tags && httpd_num_tags
 #endif /* !LWIP_HTTPD_SSI_RAW */
      ) {
 
@@ -777,11 +780,11 @@ get_tag_insert(struct http_state *hs)
 #if LWIP_HTTPD_SSI_RAW
     {
 #else /* LWIP_HTTPD_SSI_RAW */
-    for (tag = 0; tag < g_iNumTags; tag++) {
-      if (strcmp(ssi->tag_name, g_ppcTags[tag]) == 0)
+    for (tag = 0; tag < httpd_num_tags; tag++) {
+      if (strcmp(ssi->tag_name, httpd_tags[tag]) == 0)
 #endif /* LWIP_HTTPD_SSI_RAW */
       {
-        ssi->tag_insert_len = g_pfnSSIHandler(tag, ssi->tag_insert,
+        ssi->tag_insert_len = httpd_ssi_handler(tag, ssi->tag_insert,
                                               LWIP_HTTPD_MAX_TAG_INSERT_LEN
 #if LWIP_HTTPD_SSI_MULTIPART
                                               , current_tag_part, &ssi->tag_part
@@ -837,7 +840,7 @@ get_http_headers(struct http_state *hs, const char *uri)
   /* In all cases, the second header we send is the server identification
      so set it here. */
   hs->hdrs[HDR_STRINGS_IDX_SERVER_NAME] = g_psHTTPHeaderStrings[HTTP_HDR_SERVER];
-  hs->hdrs[HDR_STRINGS_IDX_CONTENT_LEN_KEPALIVE] = NULL;
+  hs->hdrs[HDR_STRINGS_IDX_CONTENT_LEN_KEEPALIVE] = NULL;
   hs->hdrs[HDR_STRINGS_IDX_CONTENT_LEN_NR] = NULL;
 
   /* Is this a normal file or the special case we use to send back the
@@ -951,13 +954,13 @@ get_http_headers(struct http_state *hs, const char *uri)
   }
 #if LWIP_HTTPD_SUPPORT_11_KEEPALIVE
   if (add_content_len) {
-    hs->hdrs[HDR_STRINGS_IDX_CONTENT_LEN_KEPALIVE] = g_psHTTPHeaderStrings[HTTP_HDR_KEEPALIVE_LEN];
+    hs->hdrs[HDR_STRINGS_IDX_CONTENT_LEN_KEEPALIVE] = g_psHTTPHeaderStrings[HTTP_HDR_KEEPALIVE_LEN];
   } else {
-    hs->hdrs[HDR_STRINGS_IDX_CONTENT_LEN_KEPALIVE] = g_psHTTPHeaderStrings[HTTP_HDR_CONN_CLOSE];
+    hs->hdrs[HDR_STRINGS_IDX_CONTENT_LEN_KEEPALIVE] = g_psHTTPHeaderStrings[HTTP_HDR_CONN_CLOSE];
   }
 #else /* LWIP_HTTPD_SUPPORT_11_KEEPALIVE */
   if (add_content_len) {
-    hs->hdrs[HDR_STRINGS_IDX_CONTENT_LEN_KEPALIVE] = g_psHTTPHeaderStrings[HTTP_HDR_CONTENT_LENGTH];
+    hs->hdrs[HDR_STRINGS_IDX_CONTENT_LEN_KEEPALIVE] = g_psHTTPHeaderStrings[HTTP_HDR_CONTENT_LENGTH];
   }
 #endif /* LWIP_HTTPD_SUPPORT_11_KEEPALIVE */
 
@@ -972,6 +975,7 @@ get_http_headers(struct http_state *hs, const char *uri)
  *           - HTTP_DATA_TO_SEND_CONTINUE: continue with sending HTTP body
  *           - HTTP_DATA_TO_SEND_BREAK: data has been enqueued, headers pending,
  *                                      so don't send HTTP body yet
+ *           - HTTP_DATA_TO_SEND_FREED: htt_state and pcb are already freed
  */
 static u8_t
 http_send_headers(struct altcp_pcb *pcb, struct http_state *hs)
@@ -1038,7 +1042,11 @@ http_send_headers(struct altcp_pcb *pcb, struct http_state *hs)
      * instead of waiting for ACK from remote side to continue
      * (which would happen when sending files from async read). */
     if (http_check_eof(pcb, hs)) {
-      data_to_send = HTTP_DATA_TO_SEND_CONTINUE;
+      data_to_send = HTTP_DATA_TO_SEND_BREAK;
+    } else {
+      /* At this point, for non-keepalive connections, hs is deallocated an
+         pcb is closed. */
+      return HTTP_DATA_TO_SEND_FREED;
     }
   }
   /* If we get here and there are still header bytes to send, we send
@@ -1231,7 +1239,7 @@ http_send_data_ssi(struct altcp_pcb *pcb, struct http_state *hs)
       case TAG_NONE:
         /* We are not currently processing an SSI tag so scan for the
          * start of the lead-in marker. */
-        if (*ssi->parsed == g_pcTagLeadIn[0]) {
+        if (*ssi->parsed == httpd_tag_lead_in[0]) {
           /* We found what could be the lead-in for a new tag so change
            * state appropriately. */
           ssi->tag_state = TAG_LEADIN;
@@ -1256,7 +1264,7 @@ http_send_data_ssi(struct altcp_pcb *pcb, struct http_state *hs)
           ssi->tag_state = TAG_FOUND;
         } else {
           /* Have we found the next character we expect for the tag leadin? */
-          if (*ssi->parsed == g_pcTagLeadIn[ssi->tag_index]) {
+          if (*ssi->parsed == httpd_tag_lead_in[ssi->tag_index]) {
             /* Yes - move to the next one unless we have found the complete
              * leadin, in which case we start looking for the tag itself */
             ssi->tag_index++;
@@ -1289,7 +1297,7 @@ http_send_data_ssi(struct altcp_pcb *pcb, struct http_state *hs)
 
         /* Have we found the end of the tag name? This is signalled by
          * us finding the first leadout character or whitespace */
-        if ((*ssi->parsed == g_pcTagLeadOut[0]) ||
+        if ((*ssi->parsed == httpd_tag_lead_out[0]) ||
             (*ssi->parsed == ' ')  || (*ssi->parsed == '\t') ||
             (*ssi->parsed == '\n') || (*ssi->parsed == '\r')) {
 
@@ -1303,7 +1311,7 @@ http_send_data_ssi(struct altcp_pcb *pcb, struct http_state *hs)
             LWIP_ASSERT("ssi->tag_index <= 0xff", ssi->tag_index <= 0xff);
             ssi->tag_name_len = (u8_t)ssi->tag_index;
             ssi->tag_name[ssi->tag_index] = '\0';
-            if (*ssi->parsed == g_pcTagLeadOut[0]) {
+            if (*ssi->parsed == httpd_tag_lead_out[0]) {
               ssi->tag_index = 1;
             } else {
               ssi->tag_index = 0;
@@ -1339,7 +1347,7 @@ http_send_data_ssi(struct altcp_pcb *pcb, struct http_state *hs)
         }
 
         /* Have we found the next character we expect for the tag leadout? */
-        if (*ssi->parsed == g_pcTagLeadOut[ssi->tag_index]) {
+        if (*ssi->parsed == httpd_tag_lead_out[ssi->tag_index]) {
           /* Yes - move to the next one unless we have found the complete
            * leadout, in which case we need to call the client to process
            * the tag. */
@@ -1552,8 +1560,9 @@ http_send(struct altcp_pcb *pcb, struct http_state *hs)
   /* Do we have any more header data to send for this file? */
   if (hs->hdr_index < NUM_FILE_HDR_STRINGS) {
     data_to_send = http_send_headers(pcb, hs);
-    if ((data_to_send != HTTP_DATA_TO_SEND_CONTINUE) &&
-        (hs->hdr_index < NUM_FILE_HDR_STRINGS)) {
+    if ((data_to_send == HTTP_DATA_TO_SEND_FREED) ||
+        ((data_to_send != HTTP_DATA_TO_SEND_CONTINUE) &&
+         (hs->hdr_index < NUM_FILE_HDR_STRINGS))) {
       return data_to_send;
     }
   }
@@ -1598,8 +1607,7 @@ http_send(struct altcp_pcb *pcb, struct http_state *hs)
 static err_t
 http_find_error_file(struct http_state *hs, u16_t error_nr)
 {
-  const char *uri1, *uri2, *uri3;
-  err_t err;
+  const char *uri, *uri1, *uri2, *uri3;
 
   if (error_nr == 501) {
     uri1 = "/501.html";
@@ -1611,19 +1619,18 @@ http_find_error_file(struct http_state *hs, u16_t error_nr)
     uri2 = "/400.htm";
     uri3 = "/400.shtml";
   }
-  err = fs_open(&hs->file_handle, uri1);
-  if (err != ERR_OK) {
-    err = fs_open(&hs->file_handle, uri2);
-    if (err != ERR_OK) {
-      err = fs_open(&hs->file_handle, uri3);
-      if (err != ERR_OK) {
-        LWIP_DEBUGF(HTTPD_DEBUG, ("Error page for error %"U16_F" not found\n",
-                                  error_nr));
-        return ERR_ARG;
-      }
-    }
+  if (fs_open(&hs->file_handle, uri1) == ERR_OK) {
+    uri = uri1;
+  } else if (fs_open(&hs->file_handle, uri2) == ERR_OK) {
+    uri = uri2;
+  } else if (fs_open(&hs->file_handle, uri3) == ERR_OK) {
+    uri = uri3;
+  } else {
+    LWIP_DEBUGF(HTTPD_DEBUG, ("Error page for error %"U16_F" not found\n",
+                              error_nr));
+    return ERR_ARG;
   }
-  return http_init_file(hs, &hs->file_handle, 0, NULL, 0, NULL);
+  return http_init_file(hs, &hs->file_handle, 0, uri, 0, NULL);
 }
 #else /* LWIP_HTTPD_SUPPORT_EXTSTATUS */
 #define http_find_error_file(hs, error_nr) ERR_ARG
@@ -1839,7 +1846,9 @@ http_post_request(struct pbuf *inp, struct http_state *hs,
 }
 
 #if LWIP_HTTPD_POST_MANUAL_WND
-/** A POST implementation can call this function to update the TCP window.
+/**
+ * @ingroup httpd
+ * A POST implementation can call this function to update the TCP window.
  * This can be used to throttle data reception (e.g. when received data is
  * programmed to flash and data is received faster than programmed).
  *
@@ -1885,6 +1894,7 @@ static void
 http_continue(void *connection)
 {
   struct http_state *hs = (struct http_state *)connection;
+  LWIP_ASSERT_CORE_LOCKED();
   if (hs && (hs->pcb) && (hs->handle)) {
     LWIP_ASSERT("hs->pcb != NULL", hs->pcb != NULL);
     LWIP_DEBUGF(HTTPD_DEBUG | LWIP_DBG_TRACE, ("httpd_continue: try to send more data\n"));
@@ -2082,6 +2092,47 @@ badrequest:
   }
 }
 
+#if LWIP_HTTPD_SSI && (LWIP_HTTPD_SSI_BY_FILE_EXTENSION == 1)
+/* Check if SSI should be parsed for this file/URL
+ * (With LWIP_HTTPD_SSI_BY_FILE_EXTENSION == 2, this function can be
+ * overridden by an external implementation.)
+ *
+ * @return 1 for SSI, 0 for standard files
+ */
+static u8_t
+http_uri_is_ssi(struct fs_file *file, const char *uri)
+{
+  size_t loop;
+  u8_t tag_check = 0;
+  if (file != NULL) {
+    /* See if we have been asked for an shtml file and, if so,
+        enable tag checking. */
+    const char *ext = NULL, *sub;
+    char *param = (char *)strstr(uri, "?");
+    if (param != NULL) {
+      /* separate uri from parameters for now, set back later */
+      *param = 0;
+    }
+    sub = uri;
+    ext = uri;
+    for (sub = strstr(sub, "."); sub != NULL; sub = strstr(sub, ".")) {
+      ext = sub;
+      sub++;
+    }
+    for (loop = 0; loop < NUM_SHTML_EXTENSIONS; loop++) {
+      if (!lwip_stricmp(ext, g_pcSSIExtensions[loop])) {
+        tag_check = 1;
+        break;
+      }
+    }
+    if (param != NULL) {
+      *param = '?';
+    }
+  }
+  return tag_check;
+}
+#endif /* LWIP_HTTPD_SSI */
+
 /** Try to find the file specified by uri and, if found, initialize hs
  * accordingly.
  *
@@ -2128,15 +2179,15 @@ http_find_file(struct http_state *hs, const char *uri, int is_09)
       if (copy_len > 0) {
         size_t len_left = sizeof(http_uri_buf) - copy_len - 1;
         if (len_left > 0) {
-          size_t name_len = strlen(g_psDefaultFilenames[loop].name);
+          size_t name_len = strlen(httpd_default_filenames[loop].name);
           size_t name_copy_len = LWIP_MIN(len_left, name_len);
-          MEMCPY(&http_uri_buf[copy_len], g_psDefaultFilenames[loop].name, name_copy_len);
+          MEMCPY(&http_uri_buf[copy_len], httpd_default_filenames[loop].name, name_copy_len);
         }
         file_name = http_uri_buf;
       } else
 #endif /* LWIP_HTTPD_MAX_REQUEST_URI_LEN */
       {
-        file_name = g_psDefaultFilenames[loop].name;
+        file_name = httpd_default_filenames[loop].name;
       }
       LWIP_DEBUGF(HTTPD_DEBUG | LWIP_DBG_TRACE, ("Looking for %s...\n", file_name));
       err = fs_open(&hs->file_handle, file_name);
@@ -2145,7 +2196,7 @@ http_find_file(struct http_state *hs, const char *uri, int is_09)
         file = &hs->file_handle;
         LWIP_DEBUGF(HTTPD_DEBUG | LWIP_DBG_TRACE, ("Opened.\n"));
 #if LWIP_HTTPD_SSI
-        tag_check = g_psDefaultFilenames[loop].shtml;
+        tag_check = httpd_default_filenames[loop].shtml;
 #endif /* LWIP_HTTPD_SSI */
         break;
       }
@@ -2164,15 +2215,15 @@ http_find_file(struct http_state *hs, const char *uri, int is_09)
 #if LWIP_HTTPD_CGI
     http_cgi_paramcount = -1;
     /* Does the base URI we have isolated correspond to a CGI handler? */
-    if (g_iNumCGIs && g_pCGIs) {
-      for (i = 0; i < g_iNumCGIs; i++) {
-        if (strcmp(uri, g_pCGIs[i].pcCGIName) == 0) {
+    if (httpd_num_cgis && httpd_cgis) {
+      for (i = 0; i < httpd_num_cgis; i++) {
+        if (strcmp(uri, httpd_cgis[i].pcCGIName) == 0) {
           /*
            * We found a CGI that handles this URI so extract the
            * parameters and call the handler.
            */
           http_cgi_paramcount = extract_uri_parameters(hs, params);
-          uri = g_pCGIs[i].pfnCGIHandler(i, http_cgi_paramcount, hs->params,
+          uri = httpd_cgis[i].pfnCGIHandler(i, http_cgi_paramcount, hs->params,
                                          hs->param_vals);
           break;
         }
@@ -2190,29 +2241,12 @@ http_find_file(struct http_state *hs, const char *uri, int is_09)
     }
 #if LWIP_HTTPD_SSI
     if (file != NULL) {
-      /* See if we have been asked for an shtml file and, if so,
-         enable tag checking. */
-      const char *ext = NULL, *sub;
-      char *param = (char *)strstr(uri, "?");
-      if (param != NULL) {
-        /* separate uri from parameters for now, set back later */
-        *param = 0;
-      }
-      sub = uri;
-      ext = uri;
-      for (sub = strstr(sub, "."); sub != NULL; sub = strstr(sub, ".")) {
-        ext = sub;
-        sub++;
-      }
-      tag_check = 0;
-      for (loop = 0; loop < NUM_SHTML_EXTENSIONS; loop++) {
-        if (!lwip_stricmp(ext, g_pcSSIExtensions[loop])) {
-          tag_check = 1;
-          break;
-        }
-      }
-      if (param != NULL) {
-        *param = '?';
+      if (file->flags & FS_FILE_FLAGS_SSI) {
+        tag_check = 1;
+      } else {
+#if LWIP_HTTPD_SSI_BY_FILE_EXTENSION
+        tag_check = http_uri_is_ssi(file, uri);
+#endif /* LWIP_HTTPD_SSI_BY_FILE_EXTENSION */
       }
     }
 #endif /* LWIP_HTTPD_SSI */
@@ -2595,6 +2629,8 @@ httpd_init(void)
 #endif
   LWIP_DEBUGF(HTTPD_DEBUG, ("httpd_init\n"));
 
+  /* LWIP_ASSERT_CORE_LOCKED(); is checked by tcp_new() */
+
   pcb = altcp_tcp_new_ip_type(IPADDR_TYPE_ANY);
   LWIP_ASSERT("httpd_init: tcp_new failed", pcb != NULL);
   httpd_init_pcb(pcb, HTTPD_SERVER_PORT);
@@ -2624,6 +2660,7 @@ httpd_inits(struct altcp_tls_config *conf)
 
 #if LWIP_HTTPD_SSI
 /**
+ * @ingroup httpd
  * Set the SSI handler function.
  *
  * @param ssi_handler the SSI handler function
@@ -2636,7 +2673,7 @@ http_set_ssi_handler(tSSIHandler ssi_handler, const char **tags, int num_tags)
   LWIP_DEBUGF(HTTPD_DEBUG, ("http_set_ssi_handler\n"));
 
   LWIP_ASSERT("no ssi_handler given", ssi_handler != NULL);
-  g_pfnSSIHandler = ssi_handler;
+  httpd_ssi_handler = ssi_handler;
 
 #if LWIP_HTTPD_SSI_RAW
   LWIP_UNUSED_ARG(tags);
@@ -2645,14 +2682,15 @@ http_set_ssi_handler(tSSIHandler ssi_handler, const char **tags, int num_tags)
   LWIP_ASSERT("no tags given", tags != NULL);
   LWIP_ASSERT("invalid number of tags", num_tags > 0);
 
-  g_ppcTags = tags;
-  g_iNumTags = num_tags;
+  httpd_tags = tags;
+  httpd_num_tags = num_tags;
 #endif /* !LWIP_HTTPD_SSI_RAW */
 }
 #endif /* LWIP_HTTPD_SSI */
 
 #if LWIP_HTTPD_CGI
 /**
+ * @ingroup httpd
  * Set an array of CGI filenames/handler functions
  *
  * @param cgis an array of CGI filenames/handler functions
@@ -2664,8 +2702,8 @@ http_set_cgi_handlers(const tCGI *cgis, int num_handlers)
   LWIP_ASSERT("no cgis given", cgis != NULL);
   LWIP_ASSERT("invalid number of handlers", num_handlers > 0);
 
-  g_pCGIs = cgis;
-  g_iNumCGIs = num_handlers;
+  httpd_cgis = cgis;
+  httpd_num_cgis = num_handlers;
 }
 #endif /* LWIP_HTTPD_CGI */
 

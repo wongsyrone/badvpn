@@ -154,14 +154,7 @@ recv_raw(void *arg, struct raw_pcb *pcb, struct pbuf *p,
     }
 #endif /* LWIP_SO_RCVBUF */
     /* copy the whole packet into new pbufs */
-    q = pbuf_alloc(PBUF_RAW, p->tot_len, PBUF_RAM);
-    if (q != NULL) {
-      if (pbuf_copy(q, p) != ERR_OK) {
-        pbuf_free(q);
-        q = NULL;
-      }
-    }
-
+    q = pbuf_clone(PBUF_RAW, PBUF_RAM, p);
     if (q != NULL) {
       u16_t len;
       buf = (struct netbuf *)memp_malloc(MEMP_NETBUF);
@@ -806,9 +799,6 @@ static void
 netconn_drain(struct netconn *conn)
 {
   void *mem;
-#if LWIP_TCP
-  struct pbuf *p;
-#endif /* LWIP_TCP */
 
   /* This runs in tcpip_thread, so we don't need to lock against rx packets */
 
@@ -819,12 +809,7 @@ netconn_drain(struct netconn *conn)
       if (NETCONNTYPE_GROUP(conn->type) == NETCONN_TCP) {
         err_t err;
         if (!lwip_netconn_is_err_msg(mem, &err)) {
-          p = (struct pbuf *)mem;
-          /* pcb might be set to NULL already by err_tcp() */
-          if (conn->pcb.tcp != NULL) {
-            tcp_recved(conn->pcb.tcp, p->tot_len);
-          }
-          pbuf_free(p);
+          pbuf_free((struct pbuf *)mem);
         }
       } else
 #endif /* LWIP_TCP */
@@ -1357,7 +1342,7 @@ lwip_netconn_do_connect(void *m)
     }
   }
   msg->err = err;
-  /* For all other protocols, netconn_connect() calls TCPIP_APIMSG(),
+  /* For all other protocols, netconn_connect() calls netconn_apimsg(),
      so use TCPIP_APIMSG_ACK() here. */
   TCPIP_APIMSG_ACK(msg);
 }

@@ -4,8 +4,11 @@
 #include "udp/test_udp.h"
 #include "tcp/test_tcp.h"
 #include "tcp/test_tcp_oos.h"
+#include "core/test_def.h"
 #include "core/test_mem.h"
+#include "core/test_netif.h"
 #include "core/test_pbuf.h"
+#include "core/test_timers.h"
 #include "etharp/test_etharp.h"
 #include "dhcp/test_dhcp.h"
 #include "mdns/test_mdns.h"
@@ -62,8 +65,11 @@ int main(void)
     udp_suite,
     tcp_suite,
     tcp_oos_suite,
+    def_suite,
     mem_suite,
+    netif_suite,
     pbuf_suite,
+    timers_suite,
     etharp_suite,
     dhcp_suite,
     mdns_suite,

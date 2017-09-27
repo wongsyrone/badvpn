@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2017 Simon Goldschmidt
- * All rights reserved. 
+ * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without modification, 
  * are permitted provided that the following conditions are met:
@@ -26,47 +26,15 @@
  *
  * This file is part of the lwIP TCP/IP stack.
  * 
- * Author: Simon Goldschmidt
+ * Author: Simon Goldschmidt <goldsimon@gmx.de>
  *
  */
-#ifndef LWIP_HDR_TEST_SYS_ARCH_H
-#define LWIP_HDR_TEST_SYS_ARCH_H
 
-typedef int sys_sem_t;
-#define sys_sem_valid(sema) ((sema) != NULL)
+#ifndef LWIP_HDR_TEST_SOCKETS_STRESSTEST
+#define LWIP_HDR_TEST_SOCKETS_STRESSTEST
 
-typedef int sys_mutex_t;
-#define sys_mutex_valid(mutex) (((mutex) != NULL)
+void sockets_stresstest_init_loopback(int addr_family);
+void sockets_stresstest_init_server(int addr_family, u16_t server_port);
+void sockets_stresstest_init_client(const char *remote_ip, u16_t remote_port);
 
-struct lwip_mbox {
-  void* sem;
-  void** q_mem;
-  unsigned int head, tail;
-  int size;
-  int used;
-};
-typedef struct lwip_mbox sys_mbox_t;
-#define SYS_MBOX_NULL NULL
-#define sys_mbox_valid(mbox) ((mbox != NULL) && ((mbox)->sem != NULL)  && ((mbox)->sem != (void*)-1))
-#define sys_mbox_valid_val(mbox) (((mbox).sem != NULL)  && ((mbox).sem != (void*)-1))
-
-/* DWORD (thread id) is used for sys_thread_t but we won't include windows.h */
-typedef u32_t sys_thread_t;
-
-#define SYS_ARCH_DECL_PROTECT(lev)
-#define SYS_ARCH_PROTECT(lev)
-#define SYS_ARCH_UNPROTECT(lev)
-
-/* to implement doing something while blocking on an mbox or semaphore:
- * pass a function to test_sys_arch_wait_callback() that returns
- * '0' if waiting again and
- * '1' if now there should be something to do (used for asserting)
- */
-typedef int (*test_sys_arch_waiting_fn)(sys_sem_t* wait_sem, sys_mbox_t* wait_mbox);
-void test_sys_arch_wait_callback(test_sys_arch_waiting_fn waiting_fn);
-
-/* current time */
-extern u32_t lwip_sys_now;
-
-#endif /* LWIP_HDR_TEST_SYS_ARCH_H */
-
+#endif /* LWIP_HDR_TEST_SOCKETS_STRESSTEST */

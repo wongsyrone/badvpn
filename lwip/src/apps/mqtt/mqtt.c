@@ -705,7 +705,7 @@ mqtt_message_received(mqtt_client_t *client, u8_t fixed_hdr_idx, u16_t length, u
     u16_t payload_length = length;
     u8_t qos = MQTT_CTL_PACKET_QOS(client->rx_buffer[0]);
 
-    if (client->msg_idx <= MQTT_VAR_HEADER_BUFFER_LEN) {
+    if ((client->msg_idx <= MQTT_VAR_HEADER_BUFFER_LEN) && (length > 0)) {
       /* Should have topic and pkt id*/
       u8_t *topic;
       u16_t after_topic;
@@ -736,7 +736,7 @@ mqtt_message_received(mqtt_client_t *client, u8_t fixed_hdr_idx, u16_t length, u
       payload_length = length - after_topic;
       payload_offset = after_topic;
 
-      LWIP_DEBUGF(MQTT_DEBUG_TRACE, ("mqtt_incomming_publish: Received message with QoS %d at topic: %s, payload length %d\n",
+      LWIP_DEBUGF(MQTT_DEBUG_TRACE, ("mqtt_incomming_publish: Received message with QoS %d at topic: %s, payload length %"U32_F"\n",
                                      qos, topic, remaining_length + payload_length));
       if (client->pub_cb != NULL) {
         client->pub_cb(client->inpub_arg, (const char *)topic, remaining_length + payload_length);
@@ -829,7 +829,7 @@ mqtt_parse_incoming(mqtt_client_t *client, struct pbuf *p)
       if (fixed_hdr_idx >= 2) {
         msg_rem_len |= (u32_t)(b & 0x7f) << ((fixed_hdr_idx - 2) * 7);
         if ((b & 0x80) == 0) {
-          LWIP_DEBUGF(MQTT_DEBUG_TRACE, ("mqtt_parse_incoming: Remaining length after fixed header: %d\n", msg_rem_len));
+          LWIP_DEBUGF(MQTT_DEBUG_TRACE, ("mqtt_parse_incoming: Remaining length after fixed header: %"U32_F"\n", msg_rem_len));
           if (msg_rem_len == 0) {
             /* Complete message with no extra headers of payload received */
             mqtt_message_received(client, fixed_hdr_idx, 0, 0);
@@ -861,7 +861,7 @@ mqtt_parse_incoming(mqtt_client_t *client, struct pbuf *p)
       in_offset += cpy_len;
       msg_rem_len -= cpy_len;
 
-      LWIP_DEBUGF(MQTT_DEBUG_TRACE, ("mqtt_parse_incoming: msg_idx: %d, cpy_len: %d, remaining %d\n", client->msg_idx, cpy_len, msg_rem_len));
+      LWIP_DEBUGF(MQTT_DEBUG_TRACE, ("mqtt_parse_incoming: msg_idx: %"U32_F", cpy_len: %"U16_F", remaining %"U32_F"\n", client->msg_idx, cpy_len, msg_rem_len));
       if (msg_rem_len == 0 || cpy_len == buffer_space) {
         /* Whole message received or buffer is full */
         mqtt_connection_status_t res = mqtt_message_received(client, fixed_hdr_idx, (cpy_start + cpy_len) - fixed_hdr_idx, msg_rem_len);
@@ -1044,7 +1044,7 @@ mqtt_tcp_connect_cb(void *arg, struct altcp_pcb *tpcb, err_t err)
  * @param client MQTT client
  * @param topic Publish topic string
  * @param payload Data to publish (NULL is allowed)
- * @param payload_length: Length of payload (0 is allowed)
+ * @param payload_length Length of payload (0 is allowed)
  * @param qos Quality of service, 0 1 or 2
  * @param retain MQTT retain flag
  * @param cb Callback to call when publish is complete or has timed out
@@ -1064,6 +1064,7 @@ mqtt_publish(mqtt_client_t *client, const char *topic, const void *payload, u16_
   u16_t topic_len;
   u16_t remaining_length;
 
+  LWIP_ASSERT_CORE_LOCKED();
   LWIP_ASSERT("mqtt_publish: client != NULL", client);
   LWIP_ASSERT("mqtt_publish: topic != NULL", topic);
   LWIP_ERROR("mqtt_publish: TCP disconnected", (client->conn_state != TCP_DISCONNECTED), return ERR_CONN);
@@ -1138,6 +1139,7 @@ mqtt_sub_unsub(mqtt_client_t *client, const char *topic, u8_t qos, mqtt_request_
   u16_t pkt_id;
   struct mqtt_request_t *r;
 
+  LWIP_ASSERT_CORE_LOCKED();
   LWIP_ASSERT("mqtt_sub_unsub: client != NULL", client);
   LWIP_ASSERT("mqtt_sub_unsub: topic != NULL", topic);
 
@@ -1196,6 +1198,7 @@ void
 mqtt_set_inpub_callback(mqtt_client_t *client, mqtt_incoming_publish_cb_t pub_cb,
                         mqtt_incoming_data_cb_t data_cb, void *arg)
 {
+  LWIP_ASSERT_CORE_LOCKED();
   LWIP_ASSERT("mqtt_set_inpub_callback: client != NULL", client != NULL);
   client->data_cb = data_cb;
   client->pub_cb = pub_cb;
@@ -1210,6 +1213,7 @@ mqtt_set_inpub_callback(mqtt_client_t *client, mqtt_incoming_publish_cb_t pub_cb
 mqtt_client_t *
 mqtt_client_new(void)
 {
+  LWIP_ASSERT_CORE_LOCKED();
   return (mqtt_client_t *)mem_calloc(1, sizeof(mqtt_client_t));
 }
 
@@ -1247,6 +1251,7 @@ mqtt_client_connect(mqtt_client_t *client, const ip_addr_t *ip_addr, u16_t port,
   u8_t flags = 0, will_topic_len = 0, will_msg_len = 0;
   u8_t client_user_len = 0, client_pass_len = 0;
 
+  LWIP_ASSERT_CORE_LOCKED();
   LWIP_ASSERT("mqtt_client_connect: client != NULL", client != NULL);
   LWIP_ASSERT("mqtt_client_connect: ip_addr != NULL", ip_addr != NULL);
   LWIP_ASSERT("mqtt_client_connect: client_info != NULL", client_info != NULL);
@@ -1394,6 +1399,7 @@ tcp_fail:
 void
 mqtt_disconnect(mqtt_client_t *client)
 {
+  LWIP_ASSERT_CORE_LOCKED();
   LWIP_ASSERT("mqtt_disconnect: client != NULL", client);
   /* If connection in not already closed */
   if (client->conn_state != TCP_DISCONNECTED) {
@@ -1412,6 +1418,7 @@ mqtt_disconnect(mqtt_client_t *client)
 u8_t
 mqtt_client_is_connected(mqtt_client_t *client)
 {
+  LWIP_ASSERT_CORE_LOCKED();
   LWIP_ASSERT("mqtt_client_is_connected: client != NULL", client);
   return client->conn_state == MQTT_CONNECTED;
 }

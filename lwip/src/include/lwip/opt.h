@@ -212,6 +212,29 @@
 #if !defined SYS_LIGHTWEIGHT_PROT || defined __DOXYGEN__
 #define SYS_LIGHTWEIGHT_PROT            1
 #endif
+
+/**
+ * Macro/function to check whether lwIP's threading/locking
+ * requirements are satisfied during current function call.
+ * This macro usually calls a function that is implemented in the OS-dependent
+ * sys layer and performs the following checks:
+ * - Not in ISR
+ * - If @ref LWIP_TCPIP_CORE_LOCKING = 1: TCPIP core lock is held
+ * - If @ref LWIP_TCPIP_CORE_LOCKING = 0: function is called from TCPIP thread
+ * @see @ref multithreading
+ */
+#if !defined LWIP_ASSERT_CORE_LOCKED || defined __DOXYGEN__
+#define LWIP_ASSERT_CORE_LOCKED()
+#endif
+
+/**
+ * Called as first thing in the lwIP TCPIP thread. Can be used in conjunction
+ * with @ref LWIP_ASSERT_CORE_LOCKED to check core locking.
+ * @see @ref multithreading
+ */
+#if !defined LWIP_MARK_TCPIP_THREAD || defined __DOXYGEN__
+#define LWIP_MARK_TCPIP_THREAD()
+#endif
 /**
  * @}
  */
@@ -293,6 +316,14 @@
  */
 #if !defined MEMP_SANITY_CHECK || defined __DOXYGEN__
 #define MEMP_SANITY_CHECK               0
+#endif
+
+/**
+ * MEM_SANITY_CHECK==1: run a sanity check after each mem_free() to make
+ * sure that the linked list of heap elements is not corrupted.
+ */
+#if !defined MEM_SANITY_CHECK || defined __DOXYGEN__
+#define MEM_SANITY_CHECK                0
 #endif
 
 /**
@@ -1075,6 +1106,11 @@
  */
 #if !defined DNS_MAX_SERVERS || defined __DOXYGEN__
 #define DNS_MAX_SERVERS                 2
+#endif
+
+/** DNS maximum number of retries when asking for a name, before "timeout". */
+#if !defined DNS_MAX_RETRIES || defined __DOXYGEN__
+#define DNS_MAX_RETRIES           4
 #endif
 
 /** DNS do a name checking between the query and the response. */
@@ -2889,7 +2925,7 @@
  * - option: option value (u8_t)
  * - len: option data length (u8_t)
  * - pbuf: pbuf where option data is contained
- * - option_value_offset: offset in pbuf where option *data* begins
+ * - option_value_offset: offset in pbuf where option data begins
  *
  * A nice way to get the option contents is pbuf_get_contiguous():
  *  u8_t buf[32];
@@ -2897,6 +2933,28 @@
  */
 #ifdef __DOXYGEN__
 #define LWIP_HOOK_DHCP_PARSE_OPTION(netif, dhcp, state, msg, msg_type, option, len, pbuf, offset)
+#endif
+
+/**
+ * LWIP_HOOK_NETCONN_EXTERNAL_RESOLVE(name, addr, addrtype, err)
+ * Called from netconn APIs (not usable with callback apps) allowing an
+ * external DNS resolver (which uses sequential API) to handle the query.
+ * Signature:
+ *   int my_hook(const char *name, ip_addr_t *addr, u8_t addrtype, err_t *err)
+ * Arguments:
+ * - name: hostname to resolve
+ * - addr: output host address
+ * - addrtype: type of address to query
+ * - err: output error
+ * Return values:
+ * - 0: Hook has not consumed hostname query, query continues into DNS module
+ * - != 0: Hook has consumed the query
+ *
+ * err must also be checked to determine if the hook consumed the query, but
+ * the query failed
+ */
+#ifdef __DOXYGEN__
+#define LWIP_HOOK_NETCONN_EXTERNAL_RESOLVE(name, addr, addrtype, err)
 #endif
 /**
  * @}
@@ -3158,6 +3216,13 @@
 /**
  * @}
  */
+
+/**
+ * LWIP_TESTMODE: Changes to make unit test possible
+ */
+#if !defined LWIP_TESTMODE
+#define LWIP_TESTMODE                   0
+#endif
 
 /*
    --------------------------------------------------

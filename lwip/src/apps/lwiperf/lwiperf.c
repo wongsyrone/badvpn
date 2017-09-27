@@ -52,8 +52,8 @@
 
 #include <string.h>
 
-/* Currently, only TCP-over-IPv4 is implemented (does iperf support IPv6 anyway?) */
-#if LWIP_IPV4 && LWIP_TCP && LWIP_CALLBACK_API
+/* Currently, only TCP is implemented (does iperf support IPv6 anyway?) */
+#if LWIP_TCP && LWIP_CALLBACK_API
 
 /** Specify the idle timeout (in seconds) after that the test fails */
 #ifndef LWIPERF_TCP_MAX_IDLE_SEC
@@ -61,6 +61,11 @@
 #endif
 #if LWIPERF_TCP_MAX_IDLE_SEC > 255
 #error LWIPERF_TCP_MAX_IDLE_SEC must fit into an u8_t
+#endif
+
+/** Change this if you don't want to lwiperf to listen to any IP version */
+#ifndef LWIPERF_SERVER_IP_TYPE
+#define LWIPERF_SERVER_IP_TYPE      IPADDR_TYPE_ANY
 #endif
 
 /* File internal memory allocation (struct lwiperf_*): this defaults to
@@ -167,11 +172,8 @@ static void lwiperf_tcp_err(void *arg, err_t err);
 static void
 lwiperf_list_add(lwiperf_state_base_t *item)
 {
-  if (lwiperf_all_connections == NULL) {
-    lwiperf_all_connections = item;
-  } else {
-    item = lwiperf_all_connections;
-  }
+  item->next = lwiperf_all_connections;
+  lwiperf_all_connections = item;
 }
 
 /** Remove an iperf session from the 'active' list */
@@ -185,7 +187,7 @@ lwiperf_list_remove(lwiperf_state_base_t *item)
       if (prev == NULL) {
         lwiperf_all_connections = iter->next;
       } else {
-        prev->next = item;
+        prev->next = iter->next;
       }
       /* @debug: ensure this item is listed only once */
       for (iter = iter->next; iter != NULL; iter = iter->next) {
@@ -368,7 +370,7 @@ lwiperf_tx_start(lwiperf_state_tcp_t *conn)
   if (client_conn == NULL) {
     return ERR_MEM;
   }
-  newpcb = tcp_new();
+  newpcb = tcp_new_ip_type(IP_GET_TYPE(&conn->conn_pcb->remote_ip));
   if (newpcb == NULL) {
     LWIPERF_FREE(lwiperf_state_tcp_t, client_conn);
     return ERR_MEM;
@@ -420,10 +422,11 @@ lwiperf_tcp_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
   }
   if (p == NULL) {
     /* connection closed -> test done */
-    if ((conn->settings.flags & PP_HTONL(LWIPERF_FLAGS_ANSWER_TEST | LWIPERF_FLAGS_ANSWER_NOW)) ==
-        PP_HTONL(LWIPERF_FLAGS_ANSWER_TEST)) {
-      /* client requested transmission after end of test */
-      lwiperf_tx_start(conn);
+    if (conn->settings.flags & PP_HTONL(LWIPERF_FLAGS_ANSWER_TEST)) {
+      if ((conn->settings.flags & PP_HTONL(LWIPERF_FLAGS_ANSWER_NOW)) == 0) {
+        /* client requested transmission after end of test */
+        lwiperf_tx_start(conn);
+      }
     }
     lwiperf_tcp_close(conn, LWIPERF_TCP_DONE_SERVER);
     return ERR_OK;
@@ -437,30 +440,33 @@ lwiperf_tcp_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
     if (p->tot_len < sizeof(lwiperf_settings_t)) {
       lwiperf_tcp_close(conn, LWIPERF_TCP_ABORTED_LOCAL_DATAERROR);
       pbuf_free(p);
-      return ERR_VAL;
+      return ERR_OK;
     }
     if (!conn->have_settings_buf) {
       if (pbuf_copy_partial(p, &conn->settings, sizeof(lwiperf_settings_t), 0) != sizeof(lwiperf_settings_t)) {
         lwiperf_tcp_close(conn, LWIPERF_TCP_ABORTED_LOCAL);
         pbuf_free(p);
-        return ERR_VAL;
+        return ERR_OK;
       }
       conn->have_settings_buf = 1;
-      if ((conn->settings.flags & PP_HTONL(LWIPERF_FLAGS_ANSWER_TEST | LWIPERF_FLAGS_ANSWER_NOW)) ==
-          PP_HTONL(LWIPERF_FLAGS_ANSWER_TEST | LWIPERF_FLAGS_ANSWER_NOW)) {
-        /* client requested parallel transmission test */
-        err_t err2 = lwiperf_tx_start(conn);
-        if (err2 != ERR_OK) {
-          lwiperf_tcp_close(conn, LWIPERF_TCP_ABORTED_LOCAL_TXERROR);
-          pbuf_free(p);
-          return err2;
+      if (conn->settings.flags & PP_HTONL(LWIPERF_FLAGS_ANSWER_TEST)) {
+        if (conn->settings.flags & PP_HTONL(LWIPERF_FLAGS_ANSWER_NOW)) {
+          /* client requested parallel transmission test */
+          err_t err2 = lwiperf_tx_start(conn);
+          if (err2 != ERR_OK) {
+            lwiperf_tcp_close(conn, LWIPERF_TCP_ABORTED_LOCAL_TXERROR);
+            pbuf_free(p);
+            return ERR_OK;
+          }
         }
       }
     } else {
-      if (pbuf_memcmp(p, 0, &conn->settings, sizeof(lwiperf_settings_t)) != 0) {
-        lwiperf_tcp_close(conn, LWIPERF_TCP_ABORTED_LOCAL_DATAERROR);
-        pbuf_free(p);
-        return ERR_VAL;
+      if (conn->settings.flags & PP_HTONL(LWIPERF_FLAGS_ANSWER_TEST)) {
+        if (pbuf_memcmp(p, 0, &conn->settings, sizeof(lwiperf_settings_t)) != 0) {
+          lwiperf_tcp_close(conn, LWIPERF_TCP_ABORTED_LOCAL_DATAERROR);
+          pbuf_free(p);
+          return ERR_OK;
+        }
       }
     }
     conn->bytes_transferred += sizeof(lwiperf_settings_t);
@@ -491,7 +497,7 @@ lwiperf_tcp_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
       } else {
         lwiperf_tcp_close(conn, LWIPERF_TCP_ABORTED_LOCAL_DATAERROR);
         pbuf_free(p);
-        return ERR_VAL;
+        return ERR_OK;
       }
     }
 #endif
@@ -597,6 +603,8 @@ lwiperf_start_tcp_server(const ip_addr_t *local_addr, u16_t local_port,
   struct tcp_pcb *pcb;
   lwiperf_state_tcp_t *s;
 
+  LWIP_ASSERT_CORE_LOCKED();
+
   if (local_addr == NULL) {
     return NULL;
   }
@@ -611,7 +619,7 @@ lwiperf_start_tcp_server(const ip_addr_t *local_addr, u16_t local_port,
   s->report_fn = report_fn;
   s->report_arg = report_arg;
 
-  pcb = tcp_new();
+  pcb = tcp_new_ip_type(LWIPERF_SERVER_IP_TYPE);
   if (pcb != NULL) {
     err = tcp_bind(pcb, local_addr, local_port);
     if (err == ERR_OK) {
@@ -643,6 +651,8 @@ lwiperf_abort(void *lwiperf_session)
 {
   lwiperf_state_base_t *i, *dealloc, *last = NULL;
 
+  LWIP_ASSERT_CORE_LOCKED();
+
   for (i = lwiperf_all_connections; i != NULL; ) {
     if ((i == lwiperf_session) || (i->related_server_state == lwiperf_session)) {
       dealloc = i;
@@ -658,4 +668,4 @@ lwiperf_abort(void *lwiperf_session)
   }
 }
 
-#endif /* LWIP_IPV4 && LWIP_TCP && LWIP_CALLBACK_API */
+#endif /* LWIP_TCP && LWIP_CALLBACK_API */

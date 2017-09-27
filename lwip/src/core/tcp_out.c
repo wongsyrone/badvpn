@@ -368,6 +368,28 @@ tcp_write_checks(struct tcp_pcb *pcb, u16_t len)
  * it can send them more efficiently by combining them together).
  * To prompt the system to send data now, call tcp_output() after
  * calling tcp_write().
+ * 
+ * This function enqueues the data pointed to by the argument dataptr. The length of
+ * the data is passed as the len parameter. The apiflags can be one or more of:
+ * - TCP_WRITE_FLAG_COPY: indicates whether the new memory should be allocated
+ *   for the data to be copied into. If this flag is not given, no new memory
+ *   should be allocated and the data should only be referenced by pointer. This
+ *   also means that the memory behind dataptr must not change until the data is
+ *   ACKed by the remote host
+ * - TCP_WRITE_FLAG_MORE: indicates that more data follows. If this is omitted,
+ *   the PSH flag is set in the last segment created by this call to tcp_write.
+ *   If this flag is given, the PSH flag is not set.
+ *
+ * The tcp_write() function will fail and return ERR_MEM if the length
+ * of the data exceeds the current send buffer size or if the length of
+ * the queue of outgoing segment is larger than the upper limit defined
+ * in lwipopts.h. The number of bytes available in the output queue can
+ * be retrieved with the tcp_sndbuf() function.
+ *
+ * The proper way to use this function is to call the function with at
+ * most tcp_sndbuf() bytes of data. If the function returns ERR_MEM,
+ * the application should wait until some of the currently enqueued
+ * data has been successfully received by the other host and try again.
  *
  * @param pcb Protocol control block for the TCP connection to enqueue data for.
  * @param arg Pointer to the data to be enqueued for sending.
@@ -403,6 +425,8 @@ tcp_write(struct tcp_pcb *pcb, const void *arg, u16_t len, u8_t apiflags)
   /* don't allocate segments bigger than half the maximum window we ever received */
   u16_t mss_local = LWIP_MIN(pcb->mss, TCPWND_MIN16(pcb->snd_wnd_max / 2));
   mss_local = mss_local ? mss_local : pcb->mss;
+
+  LWIP_ASSERT_CORE_LOCKED();
 
 #if LWIP_NETIF_TX_SINGLE_PBUF
   /* Always copy to try to create single pbufs for TX */
@@ -1111,6 +1135,7 @@ tcp_output(struct tcp_pcb *pcb)
   s16_t i = 0;
 #endif /* TCP_CWND_DEBUG */
 
+  LWIP_ASSERT_CORE_LOCKED();
   /* pcb->state LISTEN not allowed here */
   LWIP_ASSERT("don't call tcp_output for listen-pcbs",
               pcb->state != LISTEN);
@@ -1875,11 +1900,21 @@ tcp_split_unsent_seg(struct tcp_pcb *pcb, u16_t split)
   seg->flags |= TF_SEG_DATA_CHECKSUMMED;
 #endif /* TCP_CHECKSUM_ON_COPY */
 
+  /* Remove this segment from the queue since trimming it may free pbufs */
+  pcb->snd_queuelen -= pbuf_clen(useg->p);
+
   /* Trim the original pbuf into our split size.  At this point our remainder segment must be setup
   successfully because we are modifying the original segment */
   pbuf_realloc(useg->p, useg->p->tot_len - remainder);
   useg->len -= remainder;
   TCPH_SET_FLAG(useg->tcphdr, split_flags);
+#if TCP_OVERSIZE_DBGCHECK
+  /* By trimming, realloc may have actually shrunk the pbuf, so clear oversize_left */
+  useg->oversize_left = 0;
+#endif /* TCP_OVERSIZE_DBGCHECK */
+
+  /* Add back to the queue with new trimmed pbuf */
+  pcb->snd_queuelen += pbuf_clen(useg->p);
 
 #if TCP_CHECKSUM_ON_COPY
   /* The checksum on the split segment is now incorrect. We need to re-run it over the split */
@@ -1904,11 +1939,19 @@ tcp_split_unsent_seg(struct tcp_pcb *pcb, u16_t split)
   /* Update number of segments on the queues. Note that length now may
    * exceed TCP_SND_QUEUELEN! We don't have to touch pcb->snd_buf
    * because the total amount of data is constant when packet is split */
-  pcb->snd_queuelen++;
+  pcb->snd_queuelen += pbuf_clen(seg->p);
 
   /* Finally insert remainder into queue after split (which stays head) */
   seg->next = useg->next;
   useg->next = seg;
+
+#if TCP_OVERSIZE
+  /* If remainder is last segment on the unsent, ensure we clear the oversize amount
+   * because the remainder is always sized to the exact remaining amount */
+  if (seg->next == NULL) {
+    pcb->unsent_oversize = 0;
+  }
+#endif /* TCP_OVERSIZE */
 
   return ERR_OK;
 memerr:

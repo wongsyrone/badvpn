@@ -154,6 +154,8 @@ ip4_route(const ip4_addr_t *dest)
 #if !LWIP_SINGLE_NETIF
   struct netif *netif;
 
+  LWIP_ASSERT_CORE_LOCKED();
+
 #if LWIP_MULTICAST_TX_OPTIONS
   /* Use administratively selected interface for multicast by default */
   if (ip4_addr_ismulticast(dest) && ip4_default_multicast_netif) {
@@ -162,7 +164,7 @@ ip4_route(const ip4_addr_t *dest)
 #endif /* LWIP_MULTICAST_TX_OPTIONS */
 
   /* iterate through netifs */
-  for (netif = netif_list; netif != NULL; netif = netif->next) {
+  NETIF_FOREACH(netif) {
     /* is the netif up, does it have a link and a valid address? */
     if (netif_is_up(netif) && netif_is_link_up(netif) && !ip4_addr_isany_val(*netif_ip4_addr(netif))) {
       /* network mask matches? */
@@ -186,7 +188,7 @@ ip4_route(const ip4_addr_t *dest)
       return netif_default;
     }
     /* default netif is not up, just use any netif for loopback traffic */
-    for (netif = netif_list; netif != NULL; netif = netif->next) {
+    NETIF_FOREACH(netif) {
       if (netif_is_up(netif)) {
         return netif;
       }
@@ -423,6 +425,8 @@ ip4_input(struct pbuf *p, struct netif *inp)
 #if IP_ACCEPT_LINK_LAYER_ADDRESSING || LWIP_IGMP
   int check_ip_src = 1;
 #endif /* IP_ACCEPT_LINK_LAYER_ADDRESSING || LWIP_IGMP */
+
+  LWIP_ASSERT_CORE_LOCKED();
 
   IP_STATS_INC(ip.recv);
   MIB2_STATS_INC(mib2.ipinreceives);
@@ -831,6 +835,7 @@ ip4_output_if_opt_src(struct pbuf *p, const ip4_addr_t *src, const ip4_addr_t *d
   u32_t chk_sum = 0;
 #endif /* CHECKSUM_GEN_IP_INLINE */
 
+  LWIP_ASSERT_CORE_LOCKED();
   LWIP_IP_CHECK_PBUF_REF_COUNT_FOR_TX(p);
 
   MIB2_STATS_INC(mib2.ipoutrequests);

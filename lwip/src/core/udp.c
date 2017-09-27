@@ -7,7 +7,7 @@
  * @defgroup udp_raw UDP
  * @ingroup callbackstyle_api
  * User Datagram Protocol module\n
- * @see @ref raw_api and @ref netconn
+ * @see @ref api
  */
 
 /*
@@ -198,6 +198,7 @@ udp_input(struct pbuf *p, struct netif *inp)
   u8_t for_us = 0;
 
   LWIP_UNUSED_ARG(inp);
+  LWIP_ASSERT_CORE_LOCKED();
 
   PERF_START;
 
@@ -308,7 +309,7 @@ udp_input(struct pbuf *p, struct netif *inp)
   if (for_us) {
     LWIP_DEBUGF(UDP_DEBUG | LWIP_DBG_TRACE, ("udp_input: calculating checksum\n"));
 #if CHECKSUM_CHECK_UDP
-    IF__NETIF_CHECKSUM_ENABLED(inp, CHECKSUM_CHECK_UDP) {
+    IF__NETIF_CHECKSUM_ENABLED(inp, NETIF_CHECKSUM_CHECK_UDP) {
 #if LWIP_UDPLITE
       if (ip_current_header_proto() == IP_PROTO_UDPLITE) {
         /* Do the UDP Lite checksum */
@@ -423,7 +424,8 @@ chkerr:
 
 /**
  * @ingroup udp_raw
- * Send data using UDP.
+ * Sends the pbuf p using UDP. The pbuf is not deallocated.
+ *
  *
  * @param pcb UDP PCB used to send the data.
  * @param p chain of pbuf's to be sent.
@@ -679,6 +681,8 @@ udp_sendto_if_src_chksum(struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *d
   u8_t ip_proto;
   u8_t ttl;
 
+  LWIP_ASSERT_CORE_LOCKED();
+
   if ((pcb == NULL) || (dst_ip == NULL) || !IP_ADDR_PCB_VERSION_MATCH(pcb, src_ip) ||
       !IP_ADDR_PCB_VERSION_MATCH(pcb, dst_ip)) {
     return ERR_VAL;
@@ -866,9 +870,9 @@ udp_sendto_if_src_chksum(struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *d
 /**
  * @ingroup udp_raw
  * Bind an UDP PCB.
- *
+ * 
  * @param pcb UDP PCB to be bound with a local address ipaddr and port.
- * @param ipaddr local IP address to bind with. Use IP4_ADDR_ANY to
+ * @param ipaddr local IP address to bind with. Use IP_ANY_TYPE to
  * bind to all local interfaces.
  * @param port local UDP port to bind with. Use 0 to automatically bind
  * to a random port between UDP_LOCAL_PORT_RANGE_START and
@@ -891,6 +895,8 @@ udp_bind(struct udp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port)
 #if LWIP_IPV6 && LWIP_IPV6_SCOPES
   ip_addr_t zoned_ipaddr;
 #endif /* LWIP_IPV6 && LWIP_IPV6_SCOPES */
+
+  LWIP_ASSERT_CORE_LOCKED();
 
 #if LWIP_IPV4
   /* Don't propagate NULL pointer (IPv4 ANY) to subsequent functions */
@@ -994,6 +1000,8 @@ udp_bind(struct udp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port)
 void
 udp_bind_netif(struct udp_pcb *pcb, const struct netif *netif)
 {
+  LWIP_ASSERT_CORE_LOCKED();
+
   if (netif != NULL) {
     pcb->netif_idx = netif_get_index(netif);
   } else {
@@ -1003,9 +1011,8 @@ udp_bind_netif(struct udp_pcb *pcb, const struct netif *netif)
 
 /**
  * @ingroup udp_raw
- * Connect an UDP PCB.
- *
- * This will associate the UDP PCB with the remote address.
+ * Sets the remote end of the pcb. This function does not generate any
+ * network traffic, but only sets the remote address of the pcb.
  *
  * @param pcb UDP PCB to be connected with remote address ipaddr and port.
  * @param ipaddr remote IP address to connect with.
@@ -1023,6 +1030,8 @@ err_t
 udp_connect(struct udp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port)
 {
   struct udp_pcb *ipcb;
+
+  LWIP_ASSERT_CORE_LOCKED();
 
   if ((pcb == NULL) || (ipaddr == NULL)) {
     return ERR_VAL;
@@ -1068,13 +1077,16 @@ udp_connect(struct udp_pcb *pcb, const ip_addr_t *ipaddr, u16_t port)
 
 /**
  * @ingroup udp_raw
- * Disconnect a UDP PCB
+ * Remove the remote end of the pcb. This function does not generate
+ * any network traffic, but only removes the remote address of the pcb.
  *
  * @param pcb the udp pcb to disconnect.
  */
 void
 udp_disconnect(struct udp_pcb *pcb)
 {
+  LWIP_ASSERT_CORE_LOCKED();
+
   /* reset remote address association */
 #if LWIP_IPV4 && LWIP_IPV6
   if (IP_IS_ANY_TYPE_VAL(pcb->local_ip)) {
@@ -1093,8 +1105,7 @@ udp_disconnect(struct udp_pcb *pcb)
 
 /**
  * @ingroup udp_raw
- * Set a receive callback for a UDP PCB
- *
+ * Set a receive callback for a UDP PCB.
  * This callback will be called when receiving a datagram for the pcb.
  *
  * @param pcb the pcb for which to set the recv callback
@@ -1104,6 +1115,8 @@ udp_disconnect(struct udp_pcb *pcb)
 void
 udp_recv(struct udp_pcb *pcb, udp_recv_fn recv, void *recv_arg)
 {
+  LWIP_ASSERT_CORE_LOCKED();
+
   /* remember recv() callback and user data */
   pcb->recv = recv;
   pcb->recv_arg = recv_arg;
@@ -1111,8 +1124,8 @@ udp_recv(struct udp_pcb *pcb, udp_recv_fn recv, void *recv_arg)
 
 /**
  * @ingroup udp_raw
- * Remove an UDP PCB.
- *
+ * Removes and deallocates the pcb.  
+ * 
  * @param pcb UDP PCB to be removed. The PCB is removed from the list of
  * UDP PCB's and the data structure is freed from memory.
  *
@@ -1122,6 +1135,8 @@ void
 udp_remove(struct udp_pcb *pcb)
 {
   struct udp_pcb *pcb2;
+
+  LWIP_ASSERT_CORE_LOCKED();
 
   mib2_udp_unbind(pcb);
   /* pcb to be removed is first in list? */
@@ -1144,7 +1159,9 @@ udp_remove(struct udp_pcb *pcb)
 
 /**
  * @ingroup udp_raw
- * Create a UDP PCB.
+ * Creates a new UDP pcb which can be used for UDP communication. The
+ * pcb is not active until it has either been bound to a local address
+ * or connected to a remote address.
  *
  * @return The UDP PCB which was created. NULL if the PCB data structure
  * could not be allocated.
@@ -1155,6 +1172,9 @@ struct udp_pcb *
 udp_new(void)
 {
   struct udp_pcb *pcb;
+
+  LWIP_ASSERT_CORE_LOCKED();
+
   pcb = (struct udp_pcb *)memp_malloc(MEMP_UDP_PCB);
   /* could allocate UDP PCB? */
   if (pcb != NULL) {
@@ -1174,7 +1194,9 @@ udp_new(void)
 /**
  * @ingroup udp_raw
  * Create a UDP PCB for specific IP type.
- *
+ * The pcb is not active until it has either been bound to a local address
+ * or connected to a remote address.
+ * 
  * @param type IP address type, see @ref lwip_ip_addr_type definitions.
  * If you want to listen to IPv4 and IPv6 (dual-stack) packets,
  * supply @ref IPADDR_TYPE_ANY as argument and bind to @ref IP_ANY_TYPE.
@@ -1187,6 +1209,9 @@ struct udp_pcb *
 udp_new_ip_type(u8_t type)
 {
   struct udp_pcb *pcb;
+
+  LWIP_ASSERT_CORE_LOCKED();
+
   pcb = udp_new();
 #if LWIP_IPV4 && LWIP_IPV6
   if (pcb != NULL) {

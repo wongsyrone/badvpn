@@ -1,12 +1,12 @@
 /**
  * @file
- * Application layered TCP/TLS connection API (to be used from TCPIP thread)
  *
- * This file contains structure definitions for a TLS layer using mbedTLS.
+ * A netif implementing the ZigBee Eencapsulation Protocol (ZEP).
+ * This is used to tunnel 6LowPAN over UDP.
  */
 
 /*
- * Copyright (c) 2017 Simon Goldschmidt
+ * Copyright (c) 2018 Simon Goldschmidt
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -36,48 +36,46 @@
  * Author: Simon Goldschmidt <goldsimon@gmx.de>
  *
  */
-#ifndef LWIP_HDR_ALTCP_MBEDTLS_STRUCTS_H
-#define LWIP_HDR_ALTCP_MBEDTLS_STRUCTS_H
+
+#ifndef LWIP_HDR_ZEPIF_H
+#define LWIP_HDR_ZEPIF_H
 
 #include "lwip/opt.h"
+#include "netif/lowpan6.h"
 
-#if LWIP_ALTCP /* don't build if not configured for use in lwipopts.h */
+#if LWIP_IPV6 && LWIP_6LOWPAN /* don't build if not configured for use in lwipopts.h */
 
-#include "lwip/apps/altcp_tls_mbedtls_opts.h"
-
-#if LWIP_ALTCP_TLS && LWIP_ALTCP_TLS_MBEDTLS
-
-#include "lwip/altcp.h"
-#include "lwip/pbuf.h"
-
-#include "mbedtls/ssl.h"
+#include "lwip/netif.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define ALTCP_MBEDTLS_FLAGS_HANDSHAKE_DONE    0x01
-#define ALTCP_MBEDTLS_FLAGS_UPPER_CALLED      0x02
-#define ALTCP_MBEDTLS_FLAGS_RX_CLOSE_QUEUED   0x04
-#define ALTCP_MBEDTLS_FLAGS_RX_CLOSED         0x08
-#define ALTCP_MBEDTLS_FLAGS_APPLDATA_SENT     0x10
+#define ZEPIF_DEFAULT_UDP_PORT  17754
 
-typedef struct altcp_mbedtls_state_s {
-  void *conf;
-  mbedtls_ssl_context ssl_context;
-  /* chain of rx pbufs (before decryption) */
-  struct pbuf *rx;
-  struct pbuf *rx_app;
-  u8_t flags;
-  int rx_passed_unrecved;
-  int bio_bytes_read;
-  int bio_bytes_appl;
-} altcp_mbedtls_state_t;
+/** Pass this struct as 'state' to netif_add to control the behaviour
+ * of this netif. If NULL is passed, default behaviour is chosen */
+struct zepif_init {
+  /** The UDP port used to ZEP frames from (0 = default) */
+  u16_t               zep_src_udp_port;
+  /** The UDP port used to ZEP frames to (0 = default) */
+  u16_t               zep_dst_udp_port;
+  /** The IP address to sed ZEP frames from (NULL = ANY) */
+  const ip_addr_t    *zep_src_ip_addr;
+  /** The IP address to sed ZEP frames to (NULL = BROADCAST) */
+  const ip_addr_t    *zep_dst_ip_addr;
+  /** If != NULL, the udp pcb is bound to this netif */
+  const struct netif *zep_netif;
+  /** MAC address of the 6LowPAN device */
+  u8_t                addr[6];
+};
+
+err_t zepif_init(struct netif *netif);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* LWIP_ALTCP_TLS && LWIP_ALTCP_TLS_MBEDTLS */
-#endif /* LWIP_ALTCP */
-#endif /* LWIP_HDR_ALTCP_MBEDTLS_STRUCTS_H */
+#endif /* LWIP_IPV6 && LWIP_6LOWPAN */
+
+#endif /* LWIP_HDR_ZEPIF_H */
